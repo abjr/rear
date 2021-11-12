@@ -205,37 +205,83 @@ if test "$latest_full_backup" ; then
             fi
         fi
     else
-        # This script is also run during "rear recover" where RESTORE_ARCHIVES must be set:
-        case "$BACKUP_TYPE" in
-            (incremental)
-                # When a latest full backup is found use that plus all later incremental backups for restore:
-                # The following command is a bit tricky:
-                # It lists all YYYY-MM-DD-HHMM-F.tar.gz and all YYYY-MM-DD-HHMM-I.tar.gz files in the backup directory and sorts them
-                # and finally it outputs only those that match the latest full backup file name and incremental backups that got sorted after that
-                # where it is mandatory that the backup file names sort by date (i.e. date must be the leading part of the backup file names):
-                RESTORE_ARCHIVES=( $( find $backup_directory -name "$full_or_incremental_backup_glob_regex" | sort | sed -n -e "/$latest_full_backup_file_name/,\$p" ) )
-                ;;
-            (differential)
-                # For differential backup use the latest full backup plus the one latest differential backup for restore:
-                # The following command is a bit tricky:
-                # It lists all YYYY-MM-DD-HHMM-F.tar.gz and all YYYY-MM-DD-HHMM-D.tar.gz files in the backup directory and sorts them
-                # then it outputs only those that match the latest full backup file name and all differential backups that got sorted after that
-                # and then it outputs only the first line (i.e. the full backup) and the last line (i.e. the latest differential backup)
-                # but when no differential backup exists (i.e. when only the full backup exists) the first line is also the last line
-                # so that "sed -n -e '1p;$p'" outputs the full backup twice which is corrected by the final "sort -u":
-                local full_or_differential_backup_glob_regex="$date_time_glob_regex-[$full_backup_marker$differential_backup_marker]$backup_file_suffix"
-                RESTORE_ARCHIVES=( $( find $backup_directory -name "$full_or_differential_backup_glob_regex" | sort | sed -n -e "/$latest_full_backup_file_name/,\$p" | sed -n -e '1p;$p' | sort -u ) )
-                ;;
-            (*)
-                BugError "Unexpected BACKUP_TYPE '$BACKUP_TYPE'"
-                ;;
-        esac
-        # Tell the user what will be restored:
-        local restore_archives_file_names=""
-        for restore_archive in "${RESTORE_ARCHIVES[@]}" ; do
-            restore_archives_file_names="$restore_archives_file_names $( basename "$restore_archive" )"
-        done
-        LogPrint "For backup restore using $restore_archives_file_names"
+        if [ "$USE_RESTORE_MENU" = "yes" ]
+        then
+            full_backup_glob_regex="$date_time_glob_regex-$full_backup_marker$backup_file_suffix"
+            index=0
+            increments=()
+            
+            for FILE in $(find $backup_directory -name "$full_or_incremental_backup_glob_regex" | sort)
+            do
+                let "index=index+1"
+                increments[$index]="$FILE"
+                LogPrint "$index) $(basename $FILE)"
+            done
+            echo "q) quit"
+
+            while true; do
+                LogPrint "Please choose between 1 and $index (or 'q' to quit): "
+                read choice
+                case $choice in
+                       q) exit ;;
+                  [1-9]*) [ $choice -gt $index ] && (echo "Please choose a number between 1 and $index (or 'q' to quit)"; continue) || break ;;
+                       *) echo "Please choose a number between 1 and $index (or 'q' to quit):" ;;
+                esac
+            done
+            
+            INCR=${increments[$choice]}
+            IPRETTY=$(basename $INCR)
+            LogPrint "You chose: $IPRETTY"
+
+            if echo $INCR | grep -q -e "$full_backup_glob_regex" 2>/dev/null; then
+                LogPrint "We have a full!"
+                RESTORE_ARCHIVES=( $INCR )
+            else
+                LogPrint "We have an increment!"
+                FULL=$(find $backup_directory -name "$full_or_incremental_backup_glob_regex" | sort | sed -n -e "1,/$IPRETTY/p" | grep -e "$full_backup_glob_regex" | tail -n 1)
+                FPRETTY=$(basename $FULL)
+                RESTORE_ARCHIVES=( $(find $backup_directory -name "$full_or_incremental_backup_glob_regex" | sort | sed -n -e "/$FPRETTY/,/$IPRETTY/p") )
+            fi
+
+            for R in ${RESTORE_ARCHIVES[@]}
+            do
+               LogPrint "R -> $R"
+            done
+            
+        else # - abjr
+
+            # This script is also run during "rear recover" where RESTORE_ARCHIVES must be set:
+            case "$BACKUP_TYPE" in
+                (incremental)
+                    # When a latest full backup is found use that plus all later incremental backups for restore:
+                    # The following command is a bit tricky:
+                    # It lists all YYYY-MM-DD-HHMM-F.tar.gz and all YYYY-MM-DD-HHMM-I.tar.gz files in the backup directory and sorts them
+                    # and finally it outputs only those that match the latest full backup file name and incremental backups that got sorted after that
+                    # where it is mandatory that the backup file names sort by date (i.e. date must be the leading part of the backup file names):
+                    RESTORE_ARCHIVES=( $( find $backup_directory -name "$full_or_incremental_backup_glob_regex" | sort | sed -n -e "/$latest_full_backup_file_name/,\$p" ) )
+                    ;;
+                (differential)
+                    # For differential backup use the latest full backup plus the one latest differential backup for restore:
+                    # The following command is a bit tricky:
+                    # It lists all YYYY-MM-DD-HHMM-F.tar.gz and all YYYY-MM-DD-HHMM-D.tar.gz files in the backup directory and sorts them
+                    # then it outputs only those that match the latest full backup file name and all differential backups that got sorted after that
+                    # and then it outputs only the first line (i.e. the full backup) and the last line (i.e. the latest differential backup)
+                    # but when no differential backup exists (i.e. when only the full backup exists) the first line is also the last line
+                    # so that "sed -n -e '1p;$p'" outputs the full backup twice which is corrected by the final "sort -u":
+                    local full_or_differential_backup_glob_regex="$date_time_glob_regex-[$full_backup_marker$differential_backup_marker]$backup_file_suffix"
+                    RESTORE_ARCHIVES=( $( find $backup_directory -name "$full_or_differential_backup_glob_regex" | sort | sed -n -e "/$latest_full_backup_file_name/,\$p" | sed -n -e '1p;$p' | sort -u ) )
+                    ;;
+                (*)
+                    BugError "Unexpected BACKUP_TYPE '$BACKUP_TYPE'"
+                    ;;
+            esac
+            # Tell the user what will be restored:
+            local restore_archives_file_names=""
+            for restore_archive in "${RESTORE_ARCHIVES[@]}" ; do
+                restore_archives_file_names="$restore_archives_file_names $( basename "$restore_archive" )"
+            done
+            LogPrint "For backup restore using $restore_archives_file_names"
+        fi # - abjr
     fi
 # No latest full backup is found:
 else
